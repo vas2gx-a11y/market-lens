@@ -58,6 +58,8 @@
         </div>
       </div>
       <div id="chart-main" class="chart main-chart"></div>
+      <div class="sub-label">出来高 <span id="vol-stat" class="mono"></span></div>
+      <div id="chart-vol" class="chart sub-chart"></div>
       <div class="sub-label">RSI (14)</div>
       <div id="chart-rsi" class="chart sub-chart"></div>
       <div class="sub-label">MACD (12, 26, 9)</div>
@@ -84,6 +86,11 @@
       </div>
       <div class="fc-range">95%区間：<span class="mono" id="fc-range">—</span></div>
       <p class="note">直近120日の対数価格トレンド＋ボラティリティによる統計モデル。</p>
+    </div>
+
+    <div class="card" id="fund-card">
+      <h2>ファンダメンタル</h2>
+      <dl class="fund" id="fund"></dl>
     </div>
 
     <div class="card">

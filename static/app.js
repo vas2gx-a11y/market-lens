@@ -45,6 +45,7 @@ const baseOpts = () => ({
 
 const LC = LightweightCharts;
 const mainChart = LC.createChart($("chart-main"), baseOpts());
+const volChart = LC.createChart($("chart-vol"), { ...baseOpts(), timeScale: { visible: false } });
 const rsiChart = LC.createChart($("chart-rsi"), { ...baseOpts(), timeScale: { visible: false } });
 const macdChart = LC.createChart($("chart-macd"), { ...baseOpts(), timeScale: { visible: false } });
 
@@ -53,7 +54,8 @@ const S = {
     upColor: css("--up"), downColor: css("--down"), borderVisible: false,
     wickUpColor: css("--up"), wickDownColor: css("--down"),
   }),
-  volume: mainChart.addHistogramSeries({ priceScaleId: "vol", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false }),
+  volume: volChart.addHistogramSeries({ priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false }),
+  VOL_MA20: volChart.addLineSeries({ color: css("--sma50"), lineWidth: 1, priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false }),
   SMA20: mainChart.addLineSeries({ color: css("--sma20"), lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
   SMA50: mainChart.addLineSeries({ color: css("--sma50"), lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
   SMA200: mainChart.addLineSeries({ color: css("--sma200"), lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
@@ -69,12 +71,11 @@ const S = {
   MACD_SIG: macdChart.addLineSeries({ color: css("--sma50"), lineWidth: 1, priceLineVisible: false, lastValueVisible: false }),
   MACD_HIST: macdChart.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false }),
 };
-mainChart.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
 S.RSI.createPriceLine({ price: 70, color: "rgba(239,68,68,.5)", lineStyle: LC.LineStyle.Dashed, axisLabelVisible: false });
 S.RSI.createPriceLine({ price: 30, color: "rgba(34,197,94,.5)", lineStyle: LC.LineStyle.Dashed, axisLabelVisible: false });
 
 // 3つのチャートの横スクロールを同期
-const charts = [mainChart, rsiChart, macdChart];
+const charts = [mainChart, volChart, rsiChart, macdChart];
 let syncing = false;
 charts.forEach((c) => c.timeScale().subscribeVisibleLogicalRangeChange((r) => {
   if (syncing || !r) return;
@@ -102,7 +103,7 @@ function renderCharts(d) {
   S.volume.setData(d.volume.map((v, i) => ({
     ...v, color: (d.candles[i].close >= d.candles[i].open ? up : down) + "40",
   })));
-  for (const k of ["SMA20", "SMA50", "SMA200", "BB_UP", "BB_LO", "RSI", "MACD", "MACD_SIG"]) {
+  for (const k of ["SMA20", "SMA50", "SMA200", "BB_UP", "BB_LO", "RSI", "MACD", "MACD_SIG", "VOL_MA20"]) {
     S[k].setData(d.indicators[k]);
   }
   S.MACD_HIST.setData(d.indicators.MACD_HIST.map((p) => ({ ...p, color: p.value >= 0 ? up + "99" : down + "99" })));
@@ -140,6 +141,12 @@ function renderPanels(d) {
   $("sig-list").innerHTML = sg.items.map((i) =>
     `<li><b>${i.name}</b><span class="${cls(i.score)}">${i.note}</span></li>`).join("");
 
+  const vs = d.volume_stats;
+  $("vol-stat").innerHTML = vs
+    ? `${fmtVol(vs.last)}（20日平均の <span class="${vs.ratio >= 1.5 ? "up" : ""}">${vs.ratio ?? "—"}倍</span>）`
+    : "（データなし）";
+  renderFundamentals(d.fundamentals || {});
+
   const fc = d.forecast;
   $("fc-h").textContent = `${fc.horizon}日後`;
   $("fc-target").textContent = fmt(fc.target);
@@ -148,6 +155,34 @@ function renderPanels(d) {
   $("fc-prob").textContent = `${fc.prob_up}%`;
   $("fc-vol").textContent = `${fc.volatility_annual}%`;
   $("fc-range").textContent = `${fmt(fc.range95[0])} 〜 ${fmt(fc.range95[1])}`;
+}
+
+function fmtVol(v) {
+  if (v == null) return "—";
+  if (v >= 1e12) return `${(v / 1e12).toFixed(2)}兆`;
+  if (v >= 1e8) return `${(v / 1e8).toFixed(2)}億`;
+  if (v >= 1e4) return `${(v / 1e4).toFixed(1)}万`;
+  return fmt(v, 0);
+}
+
+function renderFundamentals(f) {
+  const cur = f.currency === "JPY" ? "円" : f.currency === "USD" ? "ドル" : (f.currency || "");
+  const rows = [
+    ["時価総額", f.marketCap != null && `${fmtVol(f.marketCap)}${cur}`],
+    ["PER（実績）", f.trailingPE != null && `${f.trailingPE.toFixed(1)}倍`],
+    ["PER（予想）", f.forwardPE != null && `${f.forwardPE.toFixed(1)}倍`],
+    ["PBR", f.priceToBook != null && `${f.priceToBook.toFixed(2)}倍`],
+    ["EPS", f.trailingEps != null && fmt(f.trailingEps, 2)],
+    ["ROE", f.returnOnEquity != null && `${(f.returnOnEquity * 100).toFixed(1)}%`],
+    ["配当利回り", f.dividendYield != null && `${f.dividendYield.toFixed(2)}%`],
+    ["ベータ", f.beta != null && f.beta.toFixed(2)],
+    ["52週高値", f.fiftyTwoWeekHigh != null && fmt(f.fiftyTwoWeekHigh)],
+    ["52週安値", f.fiftyTwoWeekLow != null && fmt(f.fiftyTwoWeekLow)],
+    ["平均出来高", f.averageVolume ? fmtVol(f.averageVolume) : false],
+    ["業種", f.industry || false],
+  ].filter(([, v]) => v);
+  $("fund-card").style.display = rows.length ? "" : "none";
+  $("fund").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
 }
 
 // ---------- load ----------

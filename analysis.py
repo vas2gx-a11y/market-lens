@@ -36,15 +36,25 @@ def fetch_history(symbol: str, period: str = "1y") -> pd.DataFrame:
     return _cached(("hist", symbol, period), load)
 
 
-def fetch_name(symbol: str) -> str:
+FUNDAMENTAL_KEYS = (
+    "currency", "marketCap", "trailingPE", "forwardPE", "priceToBook", "dividendYield",
+    "trailingEps", "returnOnEquity", "beta", "fiftyTwoWeekHigh", "fiftyTwoWeekLow",
+    "averageVolume", "sector", "industry",
+)
+
+
+def fetch_info(symbol: str) -> dict:
     def load():
         try:
             info = yf.Ticker(symbol).info or {}
-            return info.get("shortName") or info.get("longName") or symbol
         except Exception:
-            return symbol
+            info = {}
+        return {
+            "name": info.get("shortName") or info.get("longName") or symbol,
+            **{k: info.get(k) for k in FUNDAMENTAL_KEYS},
+        }
 
-    return _cached(("name", symbol), load)
+    return _cached(("info", symbol), load)
 
 
 # ---------- テクニカル指標 ----------
@@ -71,6 +81,10 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["MACD"] = ema12 - ema26
     df["MACD_SIG"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_HIST"] = df["MACD"] - df["MACD_SIG"]
+
+    vol = df["Volume"].fillna(0)
+    df["VOL_MA20"] = vol.rolling(20).mean()
+    df["OBV"] = (np.sign(delta).fillna(0) * vol).cumsum()
     return df
 
 
@@ -113,6 +127,19 @@ def signals(df: pd.DataFrame) -> dict:
             add("ボリンジャー", -0.5, "+2σ超え：過熱")
         elif last["Close"] < last["BB_LO"]:
             add("ボリンジャー", 0.5, "-2σ割れ：売られすぎ")
+
+    if pd.notna(last["VOL_MA20"]) and last["VOL_MA20"] > 0:
+        ratio = last["Volume"] / last["VOL_MA20"]
+        up = last["Close"] >= prev["Close"]
+        if ratio >= 1.5:
+            add("出来高", 0.5 if up else -0.5,
+                f"平均の{ratio:.1f}倍の出来高で{'上昇' if up else '下落'}")
+        else:
+            add("出来高", 0, f"平均の{ratio:.1f}倍（通常水準）")
+        obv = df["OBV"]
+        obv_up = obv.iloc[-1] > obv.iloc[-21] if len(obv) > 21 else None
+        if obv_up is not None:
+            add("OBV", 0.5 if obv_up else -0.5, f"OBVが20日前より{'増加（買い優勢）' if obv_up else '減少（売り優勢）'}")
 
     total = sum(i["score"] for i in items)
     max_abs = sum(abs(i["score"]) if i["score"] else 0.5 for i in items) or 1
@@ -196,16 +223,26 @@ def analyze(symbol: str, period: str = "1y", horizon: int = 20) -> dict:
     ]
     volume = [{"time": d.strftime("%Y-%m-%d"), "value": float(v)} for d, v in df["Volume"].items()]
 
+    info = fetch_info(symbol)
+    has_volume = bool(full["Volume"].iloc[-60:].sum() > 0)
+    vol_ma = last["VOL_MA20"]
     return {
         "symbol": symbol,
-        "name": fetch_name(symbol),
+        "name": info["name"],
+        "fundamentals": {k: v for k, v in info.items() if k != "name" and v is not None},
+        "volume_stats": {
+            "last": float(last["Volume"]),
+            "ma20": None if pd.isna(vol_ma) else float(vol_ma),
+            "ratio": None if pd.isna(vol_ma) or not vol_ma else round(float(last["Volume"] / vol_ma), 2),
+        } if has_volume else None,
         "last": round(float(last["Close"]), 6),
         "change_pct": round(float((last["Close"] / prev["Close"] - 1) * 100), 2),
         "date": full.index[-1].strftime("%Y-%m-%d"),
         "candles": candles,
         "volume": volume,
         "indicators": {c: _series(df, c) for c in
-                       ("SMA20", "SMA50", "SMA200", "BB_UP", "BB_LO", "RSI", "MACD", "MACD_SIG", "MACD_HIST")},
+                       ("SMA20", "SMA50", "SMA200", "BB_UP", "BB_LO", "RSI", "MACD", "MACD_SIG", "MACD_HIST",
+                        "VOL_MA20", "OBV")},
         "latest": {c: (None if pd.isna(last[c]) else round(float(last[c]), 4)) for c in
                    ("SMA20", "SMA50", "SMA200", "BB_UP", "BB_LO", "RSI", "MACD", "MACD_SIG")},
         "signals": signals(full),
