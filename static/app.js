@@ -1,8 +1,12 @@
 const PRESETS = [
-  ["トヨタ", "7203.T"], ["ソニーG", "6758.T"], ["三菱UFJ", "8306.T"],
-  ["Apple", "AAPL"], ["NVIDIA", "NVDA"], ["Microsoft", "MSFT"],
-  ["Bitcoin", "BTC-USD"], ["Ethereum", "ETH-USD"],
-  ["USD/JPY", "JPY=X"], ["日経平均", "^N225"], ["S&P500", "^GSPC"], ["NASDAQ", "^IXIC"],
+  ["株", [["トヨタ", "7203.T"], ["ソニーG", "6758.T"], ["三菱UFJ", "8306.T"],
+    ["Apple", "AAPL"], ["NVIDIA", "NVDA"], ["Microsoft", "MSFT"]]],
+  ["指数", [["日経平均", "^N225"], ["S&P500", "^GSPC"], ["NASDAQ", "^IXIC"]]],
+  ["為替", [["USD/JPY", "JPY=X"], ["EUR/JPY", "EURJPY=X"], ["GBP/JPY", "GBPJPY=X"], ["AUD/JPY", "AUDJPY=X"],
+    ["CHF/JPY", "CHFJPY=X"], ["EUR/USD", "EURUSD=X"], ["GBP/USD", "GBPUSD=X"], ["USD/CNY", "CNY=X"],
+    ["ドル指数", "DX-Y.NYB"]]],
+  ["暗号資産", [["Bitcoin", "BTC-USD"], ["BTC/円", "BTC-JPY"], ["Ethereum", "ETH-USD"], ["XRP", "XRP-USD"],
+    ["Solana", "SOL-USD"], ["BNB", "BNB-USD"], ["Dogecoin", "DOGE-USD"], ["Cardano", "ADA-USD"], ["Litecoin", "LTC-USD"]]],
 ];
 const LS_KEY = "marketlens.watchlist";
 const $ = (id) => document.getElementById(id);
@@ -38,16 +42,17 @@ const baseOpts = () => ({
   layout: { background: { color: "transparent" }, textColor: css("--muted"), fontFamily: css("--mono") },
   grid: { vertLines: { color: "#1a2234" }, horzLines: { color: "#1a2234" } },
   rightPriceScale: { borderColor: css("--line") },
-  timeScale: { borderColor: css("--line") },
+  // 全期間（数千〜1万本以上）でも1画面に収められるようにする
+  timeScale: { borderColor: css("--line"), minBarSpacing: 0.01 },
   crosshair: { mode: 0 },
   autoSize: true,
 });
 
 const LC = LightweightCharts;
 const mainChart = LC.createChart($("chart-main"), baseOpts());
-const volChart = LC.createChart($("chart-vol"), { ...baseOpts(), timeScale: { visible: false } });
-const rsiChart = LC.createChart($("chart-rsi"), { ...baseOpts(), timeScale: { visible: false } });
-const macdChart = LC.createChart($("chart-macd"), { ...baseOpts(), timeScale: { visible: false } });
+const volChart = LC.createChart($("chart-vol"), { ...baseOpts(), timeScale: { visible: false, minBarSpacing: 0.01 } });
+const rsiChart = LC.createChart($("chart-rsi"), { ...baseOpts(), timeScale: { visible: false, minBarSpacing: 0.01 } });
+const macdChart = LC.createChart($("chart-macd"), { ...baseOpts(), timeScale: { visible: false, minBarSpacing: 0.01 } });
 
 const S = {
   candle: mainChart.addCandlestickSeries({
@@ -192,14 +197,18 @@ function renderFundamentals(f) {
 
 // ---------- interval / period ----------
 const PERIODS = {
-  daily: [["3mo", "3ヶ月"], ["6mo", "6ヶ月"], ["1y", "1年"], ["2y", "2年"], ["5y", "5年"]],
-  intraday: [["1d", "1日"], ["5d", "5日"], ["1mo", "1ヶ月"]],
+  daily: [["3mo", "3ヶ月"], ["6mo", "6ヶ月"], ["1y", "1年"], ["2y", "2年"], ["5y", "5年"], ["10y", "10年"], ["max", "全期間"]],
+  // Yahoo Finance の取得上限：5分・15分足は約60日〜3ヶ月、1時間足は約2〜3年（「全期間」は取れる分すべて）
+  "60m": [["1d", "1日"], ["5d", "5日"], ["1mo", "1ヶ月"], ["3mo", "3ヶ月"], ["6mo", "6ヶ月"], ["1y", "1年"], ["2y", "2年"], ["max", "全期間"]],
+  short: [["1d", "1日"], ["5d", "5日"], ["1mo", "1ヶ月"], ["60d", "60日"], ["max", "全期間"]],
 };
 function setPeriodOptions() {
-  const intraday = $("interval").value !== "1d";
-  const opts = PERIODS[intraday ? "intraday" : "daily"];
+  const iv = $("interval").value;
+  const intraday = iv !== "1d";
+  const opts = PERIODS[iv === "1d" ? "daily" : iv === "60m" ? "60m" : "short"];
+  const prev = $("period").value;
   $("period").innerHTML = opts.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
-  $("period").value = intraday ? "5d" : "1y";
+  $("period").value = opts.some(([v]) => v === prev) ? prev : intraday ? "5d" : "1y";
   // 予測は日足チャートにのみ描画
   const fc = document.querySelector('#toggles input[data-k="FC"]').closest("label");
   fc.style.display = intraday ? "none" : "";
@@ -222,6 +231,12 @@ async function load(symbol) {
     renderCharts(d);
     renderPanels(d);
     $("ai-out").innerHTML = "";
+    loadNews(symbol);
+    renderTechnical(d.technical);
+    if (current.symbol !== $("fa-body").dataset.s) {
+      $("fa-body").dataset.s = current.symbol;
+      loadFundamental(symbol);
+    }
     if (current.symbol !== $("bt-rows").dataset.s) resetBacktest();
     document.querySelectorAll("#presets button").forEach((b) => b.classList.toggle("active", b.dataset.s === symbol));
     const q = new URLSearchParams(location.search);
@@ -239,7 +254,8 @@ $("period").addEventListener("change", () => current && load(current.symbol));
 $("horizon").addEventListener("change", () => current && load(current.symbol));
 $("interval").addEventListener("change", () => { setPeriodOptions(); current && load(current.symbol); });
 
-$("presets").innerHTML = PRESETS.map(([n, s]) => `<button data-s="${s}">${n}</button>`).join("");
+$("presets").innerHTML = PRESETS.map(([g, list]) =>
+  `<span class="p-grp">${g}</span>${list.map(([n, s]) => `<button data-s="${s}">${n}</button>`).join("")}`).join("");
 $("presets").addEventListener("click", (e) => { if (e.target.dataset.s) load(e.target.dataset.s); });
 
 // ---------- backtest ----------
@@ -247,7 +263,6 @@ const BT_COLORS = { trend: "--sma20", reversion: "--sma200", buy_hold: "--muted"
 const btChart = LC.createChart($("chart-bt"), {
   ...baseOpts(),
   rightPriceScale: { borderColor: css("--line"), mode: LC.PriceScaleMode.Logarithmic },
-  timeScale: { borderColor: css("--line"), minBarSpacing: 0.01 },  // 10年分を1画面に収める
 });
 const BT = Object.fromEntries(Object.entries(BT_COLORS).map(([k, c]) => [k, btChart.addLineSeries({
   color: css(c), lineWidth: k === "buy_hold" ? 1 : 2, priceLineVisible: false,
@@ -403,19 +418,22 @@ const pairLine = pairChart.addBaselineSeries({
 });
 
 function setView(view) {
-  document.body.classList.toggle("view-corr", view === "corr");
+  document.body.classList.toggle("view-sub", view !== "analyze");
   $("corr-view").hidden = view !== "corr";
+  $("policy-view").hidden = view !== "policy";
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   if (view === "corr" && !corr) loadCorrelation();
+  if (view === "policy" && !policy) loadPolicy();
   // 非表示中に描画したチャートは幅0で計算されているため、表示後に合わせ直す
-  requestAnimationFrame(() => (view === "corr" ? [pairChart] : charts).forEach((c) => c.timeScale().fitContent()));
+  const visible = { analyze: charts, corr: [pairChart] }[view] || [];
+  requestAnimationFrame(() => visible.forEach((c) => c.timeScale().fitContent()));
 }
 $("tabs").addEventListener("click", (e) => {
   const v = e.target.dataset.view;
   if (!v) return;
   setView(v);
   const q = new URLSearchParams(location.search);
-  v === "corr" ? q.set("view", "corr") : q.delete("view");
+  v === "analyze" ? q.delete("view") : q.set("view", v);
   history.replaceState(null, "", `?${q}`);
 });
 
@@ -490,8 +508,170 @@ $("corr-table").addEventListener("click", (e) => {
 });
 ["corr-period", "corr-freq"].forEach((id) => $(id).addEventListener("change", loadCorrelation));
 
+// ---------- news ----------
+function ago(iso) {
+  const m = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (m < 60) return `${Math.max(m, 1)}分前`;
+  if (m < 1440) return `${Math.round(m / 60)}時間前`;
+  return `${Math.round(m / 1440)}日前`;
+}
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function safeUrl(u) {
+  return /^https?:\/\//.test(u) ? esc(u) : "#";
+}
+
+async function loadNews(symbol) {
+  $("news").innerHTML = `<li class="muted">読み込み中…</li>`;
+  $("news-q").textContent = "";
+  try {
+    const res = await fetch(`/api/news?symbol=${encodeURIComponent(symbol)}`);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || "ニュースの取得に失敗しました");
+    if (current?.symbol !== symbol) return;
+    $("news-q").textContent = d.query;
+    $("news").innerHTML = d.items.length
+      ? d.items.map((n) => `<li><a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a>
+          <span>${esc(n.source || "")}・${ago(n.published)}</span></li>`).join("")
+      : `<li class="muted">直近7日のニュースはありません。</li>`;
+  } catch (e) {
+    $("news").innerHTML = `<li class="muted">${esc(e.message)}</li>`;
+  }
+}
+
+// ---------- policy ----------
+let policy = null;
+const policyOff = new Set();
+
+async function loadPolicy() {
+  $("policy-note").textContent = "読み込み中…";
+  try {
+    const res = await fetch("/api/policy");
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || "取得に失敗しました");
+    policy = d;
+    renderPolicy();
+  } catch (e) {
+    $("policy-note").textContent = "";
+    toast(e.message);
+  }
+}
+
+function fmtJst(iso) {
+  return new Date(iso).toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+function reactChip(r) {
+  const v = (x) => (x == null ? `<span class="muted">—</span>` : `<span class="${cls(x)}">${pct(x)}</span>`);
+  return `<span class="react"><b>${esc(r.name)}</b>当日 ${v(r.d1)}<i></i>5日 ${v(r.d5)}</span>`;
+}
+
+function renderPolicy() {
+  const d = policy;
+  const srcName = Object.fromEntries(d.sources.map((s) => [s.id, s.name]));
+  $("policy-src").innerHTML = d.sources.map((s) => `
+    <span class="src ${policyOff.has(s.id) ? "off" : ""}" data-src="${s.id}">
+      <button data-src="${s.id}">${esc(s.name)}</button>
+      <a href="${safeUrl(s.page)}" target="_blank" rel="noopener noreferrer" title="公式ページを開く">↗</a>
+      ${s.error ? `<em title="${esc(s.error)}">取得失敗</em>` : ""}
+    </span>`).join("");
+  const imp = $("policy-imp").checked;
+  const items = d.items.filter((i) => !policyOff.has(i.source) && (!imp || i.important));
+  $("policy-note").textContent = `${items.length}件／過去${d.days}日・時刻は日本時間`;
+  $("policy-list").innerHTML = items.length ? items.map((i) => `
+    <li>
+      <div class="p-meta"><span class="badge b-${i.source}">${esc(srcName[i.source])}</span>
+        <span class="mono">${fmtJst(i.published)}</span>${i.important ? `<span class="imp">重要</span>` : ""}</div>
+      <a href="${safeUrl(i.link)}" target="_blank" rel="noopener noreferrer">${esc(i.title)}</a>
+      <div class="p-react">${i.reaction.map(reactChip).join("")}</div>
+    </li>`).join("") : `<li class="muted">該当する発表はありません。</li>`;
+}
+
+$("policy-src").addEventListener("click", (e) => {
+  const id = e.target.tagName === "BUTTON" && e.target.dataset.src;
+  if (!id) return;
+  policyOff.has(id) ? policyOff.delete(id) : policyOff.add(id);
+  renderPolicy();
+});
+$("policy-imp").addEventListener("change", () => policy && renderPolicy());
+
+// ---------- technical / fundamental ----------
+function scoreSpan(score, label) {
+  if (score == null) return "—";
+  const c = score >= 30 ? "up" : score <= -30 ? "down" : "";
+  return `<span class="${c}">${label} ${score > 0 ? "+" : ""}${score}</span>`;
+}
+function renderCategories(cats) {
+  return cats.map((c) => {
+    const s = c.score;
+    const bar = s == null ? "" : `<span style="${s >= 0 ? `left:50%;width:${s * 50}%` : `left:${50 + s * 50}%;width:${-s * 50}%`};background:${css(s >= 0 ? "--up" : "--down")}"></span>`;
+    const items = c.items.map((i) => {
+      const mk = i.score == null ? "" : i.score > 0 ? `<span class="mk up">＋</span>` : i.score < 0 ? `<span class="mk down">−</span>` : `<span class="mk muted">0</span>`;
+      return `<li><span>${esc(i.name)}</span><span class="v">${esc(i.value ?? "—")}</span>${mk || "<span></span>"}<small>${esc(i.note)}</small></li>`;
+    }).join("");
+    return `<details class="fa-cat"><summary><span>${esc(c.name)}</span><div class="fa-bar">${bar}</div>
+      <span class="s ${cls(s)}">${s == null ? (c.items.length ? "参考" : "—") : (s > 0 ? "+" : "") + s.toFixed(2)}</span></summary>
+      <ul class="fa-items">${items || `<li class="muted">データなし</li>`}</ul></details>`;
+  }).join("");
+}
+
+function renderTechnical(t) {
+  $("ta-score").innerHTML = scoreSpan(t.score, t.label);
+  $("ta-body").innerHTML = renderCategories(t.categories);
+}
+
+function fmtBig(v, cur) {
+  if (v == null) return "—";
+  const unit = cur === "JPY" ? "円" : cur === "USD" ? "ドル" : "";
+  const a = Math.abs(v);
+  if (a >= 1e12) return `${(v / 1e12).toFixed(1)}兆${unit}`;
+  if (a >= 1e8) return `${(v / 1e8).toFixed(0)}億${unit}`;
+  return `${fmt(v, 0)}${unit}`;
+}
+
+async function loadFundamental(symbol) {
+  $("fa-score").textContent = "…";
+  $("fa-body").innerHTML = `<div class="fa-na">読み込み中…</div>`;
+  try {
+    const res = await fetch(`/api/fundamental?symbol=${encodeURIComponent(symbol)}`);
+    const f = await res.json();
+    if (!res.ok) throw new Error(f.error || "取得に失敗しました");
+    if (current?.symbol !== symbol) return;
+    if (!f.available) {
+      $("fa-score").textContent = "対象外";
+      $("fa-body").innerHTML = `<div class="fa-na">${esc(f.reason)}</div>`;
+      return;
+    }
+    $("fa-score").innerHTML = scoreSpan(f.score, f.label);
+    let html = renderCategories(f.categories);
+
+    if (f.history.length) {
+      const max = Math.max(...f.history.map((h) => Math.abs(h.revenue || 0)));
+      const w = (v) => `${Math.max(0, (v || 0) / max * 100)}%`;
+      html += `<div class="fa-sub">業績の推移（決算期）</div><div class="fa-hist">${f.history.map((h) => `
+        <div class="row"><span class="mono">${h.year}</span>
+          <div class="bars"><i style="width:${w(h.revenue)};background:${css("--sma20")}"></i>
+            <i style="width:${w(h.net)};background:${h.net < 0 ? css("--down") : css("--accent")}"></i></div>
+          <span class="lab" title="純利益 ${fmtBig(h.net, f.currency)}">${fmtBig(h.revenue, f.currency)}</span></div>`).join("")}</div>
+        <div class="fa-legend"><span><i style="background:${css("--sma20")}"></i>売上高</span><span><i style="background:${css("--accent")}"></i>純利益</span></div>`;
+    }
+    const a = f.analyst;
+    if (a) {
+      html += `<div class="fa-sub">アナリスト予想（${a.count ?? "—"}人）</div><div class="fa-analyst">
+        <div><div class="k">平均目標株価</div><div class="v">${fmt(a.target)}</div></div>
+        <div><div class="k">現在値からの差</div><div class="v ${cls(a.upside_pct)}">${pct(a.upside_pct)}</div></div>
+        <div><div class="k">推奨（平均）</div><div class="v">${esc(a.recommendation ?? "—")}</div></div></div>`;
+    }
+    $("fa-body").innerHTML = html;
+  } catch (e) {
+    $("fa-score").textContent = "—";
+    $("fa-body").innerHTML = `<div class="fa-na">${esc(e.message)}</div>`;
+  }
+}
+
 // ---------- init ----------
 setPeriodOptions();
 load(new URLSearchParams(location.search).get("s") || "7203.T");
-if (new URLSearchParams(location.search).get("view") === "corr") setView("corr");
+const initView = new URLSearchParams(location.search).get("view");
+if (["corr", "policy"].includes(initView)) setView(initView);
 renderWatch();

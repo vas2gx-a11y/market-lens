@@ -14,6 +14,7 @@
   <nav class="tabs" id="tabs">
     <button data-view="analyze" class="active">銘柄分析</button>
     <button data-view="corr">相関</button>
+    <button data-view="policy">政策・ニュース</button>
   </nav>
   <form id="search" class="search" autocomplete="off">
     <input id="symbol" placeholder="銘柄コード（例: 7203.T / AAPL / BTC-USD）" value="7203.T">
@@ -29,6 +30,8 @@
       <option value="1y" selected>1年</option>
       <option value="2y">2年</option>
       <option value="5y">5年</option>
+      <option value="10y">10年</option>
+      <option value="max">全期間</option>
     </select>
     <select id="horizon" title="予測期間">
       <option value="5">予測 5日</option>
@@ -74,6 +77,21 @@
       <div id="chart-rsi" class="chart sub-chart"></div>
       <div class="sub-label">MACD (12, 26, 9)</div>
       <div id="chart-macd" class="chart sub-chart"></div>
+    </div>
+
+    <div class="card">
+      <div class="chart-head"><span>テクニカル・ファンダメンタル分析</span></div>
+      <div class="fa-grid">
+        <section>
+          <div class="fa-head"><h3>テクニカル</h3><span class="fa-score" id="ta-score">—</span></div>
+          <div id="ta-body"></div>
+        </section>
+        <section>
+          <div class="fa-head"><h3>ファンダメンタル</h3><span class="fa-score" id="fa-score">—</span></div>
+          <div id="fa-body"></div>
+        </section>
+      </div>
+      <p class="note">各指標を ＋（良い）／0／−（悪い）で評価し、項目ごとの平均を−100〜+100に換算しています。しきい値は業種を問わない一般的な目安で、業種によって適正な水準は異なります（例：銀行は負債比率が高くなりやすい）。</p>
     </div>
 
     <div class="card bt-card">
@@ -134,6 +152,12 @@
     </div>
 
     <div class="card">
+      <h2>ニュース <small id="news-q"></small></h2>
+      <ul class="news" id="news"></ul>
+      <p class="note">Googleニュース（直近7日）より。</p>
+    </div>
+
+    <div class="card">
       <h2>AI分析コメント</h2>
       {% if ai_enabled %}
       <button id="ai-btn" class="ghost">Claudeで分析する</button>
@@ -183,6 +207,18 @@
       <div id="chart-pair" class="chart pair-chart"></div>
       <p class="note" id="pair-note">相関は時期によって変わります。分散の効果は常に一定ではありません。</p>
     </div>
+  </div>
+</main>
+
+<main class="corr-view" id="policy-view" hidden>
+  <div class="card">
+    <div class="chart-head">
+      <span>中央銀行・政府・国際機関の発表と市場の反応 <small id="policy-note" class="mono"></small></span>
+      <label class="chk"><input type="checkbox" id="policy-imp" checked> 重要な発表のみ</label>
+    </div>
+    <div class="src-chips" id="policy-src"></div>
+    <ul class="policy" id="policy-list"></ul>
+    <p class="note">「当日」は発表の前営業日終値から発表日の終値までの騰落（市場の引け後の発表は翌営業日で計算）、「5日」は5営業日目までの騰落です。発表以外の要因も含むため、因果関係を示すものではありません。「—」はまだ市場が反応していない（未確定）ことを示します。</p>
   </div>
 </main>
 

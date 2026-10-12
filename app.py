@@ -6,6 +6,7 @@ import anthropic
 from flask import Flask, jsonify, render_template, request
 
 import analysis
+import news
 
 app = Flask(__name__)
 
@@ -76,6 +77,23 @@ def api_correlation_pair():
     return jsonify(analysis.rolling_correlation(a, b, period, freq))
 
 
+@app.get("/api/fundamental")
+def api_fundamental():
+    return jsonify(analysis.fundamental_analysis(_symbol(request.args.get("symbol"))))
+
+
+@app.get("/api/news")
+def api_news():
+    symbol = _symbol(request.args.get("symbol"))
+    name = analysis.fetch_info(symbol)["name"]
+    return jsonify(news.symbol_news(symbol, name))
+
+
+@app.get("/api/policy")
+def api_policy():
+    return jsonify(news.policy_news())
+
+
 @app.get("/api/quotes")
 def api_quotes():
     symbols = [s for s in (request.args.get("symbols") or "").split(",") if s][:30]
@@ -104,6 +122,14 @@ SYSTEM_PROMPT = """あなたは金融市場のテクニカル分析アナリス�
 - 全体で400〜600字程度"""
 
 
+def _fa_summary(symbol):
+    fa = analysis.fundamental_analysis(symbol)
+    if not fa["available"]:
+        return "対象外"
+    return {"スコア": fa["score"], **{c["name"]: {i["name"]: i["value"] for i in c["items"]} for c in fa["categories"]},
+            "業績推移": fa["history"], "アナリスト": fa["analyst"]}
+
+
 @app.post("/api/ai")
 def api_ai():
     if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -121,6 +147,8 @@ def api_ai():
         "騰落率%": data["perf"],
         "最新指標": data["latest"],
         "シグナル": data["signals"],
+        "テクニカル分析": {c["name"]: {i["name"]: i["value"] for i in c["items"]} for c in data["technical"]["categories"]},
+        "ファンダメンタル分析": _fa_summary(symbol),
         "出来高": data["volume_stats"],
         "ファンダメンタル": data["fundamentals"],
         "予測": {
