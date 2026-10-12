@@ -11,6 +11,10 @@
 <body>
 <header class="topbar">
   <div class="brand">Market<span>Lens</span></div>
+  <nav class="tabs" id="tabs">
+    <button data-view="analyze" class="active">銘柄分析</button>
+    <button data-view="corr">相関</button>
+  </nav>
   <form id="search" class="search" autocomplete="off">
     <input id="symbol" placeholder="銘柄コード（例: 7203.T / AAPL / BTC-USD）" value="7203.T">
     <select id="interval" title="足種">
@@ -145,6 +149,41 @@
       <p class="note" id="watch-empty">☆ で銘柄を追加できます。</p>
     </div>
   </aside>
+</main>
+
+<main class="corr-view" id="corr-view" hidden>
+  <div class="card">
+    <div class="chart-head">
+      <span>資産クラス間の相関（リターンの相関係数） <small id="corr-note" class="mono"></small></span>
+      <div class="bt-ctrl">
+        <select id="corr-period" title="期間">
+          <option value="1y">1年</option>
+          <option value="3y">3年</option>
+          <option value="5y" selected>5年</option>
+        </select>
+        <select id="corr-freq" title="頻度">
+          <option value="W" selected>週次</option>
+          <option value="D">日次</option>
+        </select>
+      </div>
+    </div>
+    <div class="corr-scroll"><table class="corr-table mono" id="corr-table"></table></div>
+    <div class="corr-legend"><span>−1 逆の動き</span><i></i><span>+1 同じ動き</span></div>
+    <p class="note">セルをクリックすると、その組み合わせの相関の推移を表示します。日次は市場ごとに終値の時刻が違うため（東京とNYなど）、相関が低めに出ます。</p>
+  </div>
+
+  <div class="corr-grid">
+    <div class="card">
+      <h2>ジャンル平均</h2>
+      <table class="corr-table corr-avg mono" id="corr-avg"></table>
+      <p class="note">各ジャンルに属する銘柄同士の相関の平均（同一銘柄の組み合わせは除く）。</p>
+    </div>
+    <div class="card">
+      <h2>相関の推移 <small id="pair-title"></small></h2>
+      <div id="chart-pair" class="chart pair-chart"></div>
+      <p class="note" id="pair-note">相関は時期によって変わります。分散の効果は常に一定ではありません。</p>
+    </div>
+  </div>
 </main>
 
 <footer class="disclaimer">

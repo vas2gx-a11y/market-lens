@@ -295,6 +295,78 @@ def backtest(symbol: str, period: str = "10y", threshold: int = 30, cost: float 
     }
 
 
+# ---------- 相関 ----------
+
+CORR_GROUPS = {
+    "株": {"^N225": "日経225", "^GSPC": "S&P500", "^IXIC": "NASDAQ", "^GDAXI": "DAX", "000001.SS": "上海総合"},
+    "為替": {"JPY=X": "ドル円", "EURJPY=X": "ユーロ円", "AUDJPY=X": "豪ドル円", "EURUSD=X": "ユーロドル",
+           "DX-Y.NYB": "ドル指数"},
+    "コモディティ": {"GC=F": "金", "SI=F": "銀", "CL=F": "原油", "HG=F": "銅", "NG=F": "天然ガス"},
+}
+CORR_SYMBOLS = {s: n for g in CORR_GROUPS.values() for s, n in g.items()}
+
+
+def _corr_returns(period: str, freq: str) -> pd.DataFrame:
+    days = {"1y": 365, "3y": 365 * 3, "5y": 365 * 5}[period]
+    px = {}
+    for s in CORR_SYMBOLS:
+        try:
+            px[s] = fetch_history(s, "5y")["Close"]
+        except ValueError:
+            continue
+    px = pd.DataFrame(px)
+    px = px[px.index >= px.index[-1] - pd.Timedelta(days=days)]
+    # 市場ごとに終値時刻が違うため、週次（金曜終値）が既定
+    if freq == "W":
+        last = px.index[-1]
+        px = px.resample("W-FRI").last()
+        px.index = px.index[:-1].append(pd.DatetimeIndex([min(px.index[-1], last)]))
+    return px.pct_change(fill_method=None).iloc[1:]
+
+
+def correlation(period: str = "5y", freq: str = "W") -> dict:
+    ret = _corr_returns(period, freq)
+    c = ret.corr(min_periods=20)
+    syms = list(c.columns)
+    group_of = {s: g for g, d in CORR_GROUPS.items() for s in d}
+
+    groups = {}
+    for a in CORR_GROUPS:
+        groups[a] = {}
+        for b in CORR_GROUPS:
+            vals = [c.loc[i, j] for i in syms for j in syms
+                    if i != j and group_of[i] == a and group_of[j] == b and pd.notna(c.loc[i, j])]
+            groups[a][b] = round(float(np.mean(vals)), 2) if vals else None
+
+    return {
+        "period": period,
+        "freq": freq,
+        "from": ret.index[0].strftime("%Y-%m-%d"),
+        "to": ret.index[-1].strftime("%Y-%m-%d"),
+        "n": int(len(ret)),
+        "groups": [{"name": g, "assets": [{"symbol": s, "name": n} for s, n in d.items() if s in syms]}
+                   for g, d in CORR_GROUPS.items()],
+        "matrix": {i: {j: (None if pd.isna(c.loc[i, j]) else round(float(c.loc[i, j]), 2)) for j in syms}
+                   for i in syms},
+        "group_avg": groups,
+    }
+
+
+def rolling_correlation(a: str, b: str, period: str = "5y", freq: str = "W") -> dict:
+    if a not in CORR_SYMBOLS or b not in CORR_SYMBOLS:
+        raise ValueError("対象外の銘柄です")
+    ret = _corr_returns(period, freq)
+    window = 26 if freq == "W" else 60
+    r = ret[a].rolling(window, min_periods=window // 2).corr(ret[b]).dropna()
+    return {
+        "a": {"symbol": a, "name": CORR_SYMBOLS[a]},
+        "b": {"symbol": b, "name": CORR_SYMBOLS[b]},
+        "window": window,
+        "unit": "週" if freq == "W" else "日",
+        "series": [{"time": d.strftime("%Y-%m-%d"), "value": round(float(v), 3)} for d, v in r.items()],
+    }
+
+
 # ---------- まとめ ----------
 
 def _t(d, intraday):

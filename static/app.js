@@ -224,7 +224,9 @@ async function load(symbol) {
     $("ai-out").innerHTML = "";
     if (current.symbol !== $("bt-rows").dataset.s) resetBacktest();
     document.querySelectorAll("#presets button").forEach((b) => b.classList.toggle("active", b.dataset.s === symbol));
-    history.replaceState(null, "", `?s=${encodeURIComponent(symbol)}`);
+    const q = new URLSearchParams(location.search);
+    q.set("s", symbol);
+    history.replaceState(null, "", `?${q}`);
   } catch (e) {
     toast(e.message);
   } finally {
@@ -385,7 +387,111 @@ $("watch").addEventListener("click", (e) => {
   if (li) load(li.dataset.s);
 });
 
+// ---------- correlation ----------
+let corr = null;
+let pair = null;
+const pairChart = LC.createChart($("chart-pair"), {
+  ...baseOpts(),
+  timeScale: { borderColor: css("--line"), minBarSpacing: 0.01 },
+});
+const pairLine = pairChart.addBaselineSeries({
+  baseValue: { type: "price", price: 0 },
+  topLineColor: css("--accent"), topFillColor1: "rgba(245,185,66,.25)", topFillColor2: "rgba(245,185,66,0)",
+  bottomLineColor: css("--sma20"), bottomFillColor1: "rgba(96,165,250,0)", bottomFillColor2: "rgba(96,165,250,.25)",
+  lineWidth: 2, priceLineVisible: false,
+  autoscaleInfoProvider: () => ({ priceRange: { minValue: -1, maxValue: 1 } }),
+});
+
+function setView(view) {
+  document.body.classList.toggle("view-corr", view === "corr");
+  $("corr-view").hidden = view !== "corr";
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+  if (view === "corr" && !corr) loadCorrelation();
+  // 非表示中に描画したチャートは幅0で計算されているため、表示後に合わせ直す
+  requestAnimationFrame(() => (view === "corr" ? [pairChart] : charts).forEach((c) => c.timeScale().fitContent()));
+}
+$("tabs").addEventListener("click", (e) => {
+  const v = e.target.dataset.view;
+  if (!v) return;
+  setView(v);
+  const q = new URLSearchParams(location.search);
+  v === "corr" ? q.set("view", "corr") : q.delete("view");
+  history.replaceState(null, "", `?${q}`);
+});
+
+function corrCell(v, a, b) {
+  if (a === b) return `<td class="diag">—</td>`;
+  if (v == null) return `<td class="diag">n/a</td>`;
+  const c = v >= 0 ? "pos" : "neg";
+  const sel = pair && ((pair[0] === a && pair[1] === b) || (pair[0] === b && pair[1] === a)) ? " sel" : "";
+  return `<td class="${c}${Math.abs(v) >= 0.5 ? " strong" : ""}${sel}" style="--a:${(Math.abs(v) * 0.85).toFixed(2)}"
+    data-a="${a}" data-b="${b}">${v > 0 ? "+" : ""}${v.toFixed(2)}</td>`;
+}
+
+async function loadCorrelation() {
+  const params = new URLSearchParams({ period: $("corr-period").value, freq: $("corr-freq").value });
+  $("corr-note").textContent = "読み込み中…";
+  try {
+    const res = await fetch(`/api/correlation?${params}`);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || "相関の取得に失敗しました");
+    corr = d;
+    renderCorrelation();
+    loadPair(...(pair || ["^GSPC", "GC=F"]));
+  } catch (e) {
+    $("corr-note").textContent = "";
+    toast(e.message);
+  }
+}
+
+function renderCorrelation() {
+  const d = corr;
+  const unit = d.freq === "W" ? "週" : "日";
+  $("corr-note").textContent = `${d.from} 〜 ${d.to}・${unit}次 ${d.n}本`;
+  const assets = d.groups.flatMap((g) => g.assets.map((a) => ({ ...a, group: g.name })));
+  const head1 = `<tr><th></th><th></th>${d.groups.map((g) => `<th class="grp" colspan="${g.assets.length}">${g.name}</th>`).join("")}</tr>`;
+  const head2 = `<tr><th></th><th></th>${assets.map((a) => `<th>${a.name}</th>`).join("")}</tr>`;
+  const body = d.groups.map((g) => g.assets.map((a, i) => `<tr>
+      ${i === 0 ? `<th class="grp" rowspan="${g.assets.length}">${g.name}</th>` : ""}
+      <th>${a.name}</th>${assets.map((b) => corrCell(d.matrix[a.symbol][b.symbol], a.symbol, b.symbol)).join("")}
+    </tr>`).join("")).join("");
+  $("corr-table").innerHTML = `<thead>${head1}${head2}</thead><tbody>${body}</tbody>`;
+
+  const names = d.groups.map((g) => g.name);
+  $("corr-avg").innerHTML = `<thead><tr><th></th>${names.map((n) => `<th>${n}</th>`).join("")}</tr></thead><tbody>${
+    names.map((a) => `<tr><th>${a}</th>${names.map((b) => {
+      const v = d.group_avg[a][b];
+      return v == null ? `<td class="diag">—</td>` : `<td class="${v >= 0 ? "pos" : "neg"}" style="--a:${(Math.abs(v) * 0.85).toFixed(2)}">${v > 0 ? "+" : ""}${v.toFixed(2)}</td>`;
+    }).join("")}</tr>`).join("")}</tbody>`;
+}
+
+async function loadPair(a, b) {
+  pair = [a, b];
+  if (corr) renderCorrelation();
+  const params = new URLSearchParams({ a, b, period: $("corr-period").value, freq: $("corr-freq").value });
+  try {
+    const res = await fetch(`/api/correlation/pair?${params}`);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || "推移の取得に失敗しました");
+    if (pair[0] !== a || pair[1] !== b) return;
+    $("pair-title").textContent = `${d.a.name} × ${d.b.name}`;
+    pairLine.setData(d.series);
+    const last = d.series.at(-1)?.value;
+    $("pair-note").textContent = `直近${d.window}${d.unit}のローリング相関。最新値 ${last != null ? (last > 0 ? "+" : "") + last.toFixed(2) : "—"}。相関は時期によって変わり、分散の効果は常に一定ではありません。`;
+    requestAnimationFrame(() => pairChart.timeScale().fitContent());
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+$("corr-table").addEventListener("click", (e) => {
+  const td = e.target.closest("td[data-a]");
+  if (td) loadPair(td.dataset.a, td.dataset.b);
+});
+["corr-period", "corr-freq"].forEach((id) => $(id).addEventListener("change", loadCorrelation));
+
 // ---------- init ----------
 setPeriodOptions();
 load(new URLSearchParams(location.search).get("s") || "7203.T");
+if (new URLSearchParams(location.search).get("view") === "corr") setView("corr");
 renderWatch();

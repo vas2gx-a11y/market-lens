@@ -56,6 +56,26 @@ def api_backtest():
     return jsonify(analysis.backtest(symbol, period, threshold))
 
 
+def _corr_params():
+    period = request.args.get("period", "5y")
+    freq = request.args.get("freq", "W")
+    if period not in ("1y", "3y", "5y") or freq not in ("W", "D"):
+        raise ValueError("期間または頻度が不正です")
+    return period, freq
+
+
+@app.get("/api/correlation")
+def api_correlation():
+    return jsonify(analysis.correlation(*_corr_params()))
+
+
+@app.get("/api/correlation/pair")
+def api_correlation_pair():
+    period, freq = _corr_params()
+    a, b = _symbol(request.args.get("a")), _symbol(request.args.get("b"))
+    return jsonify(analysis.rolling_correlation(a, b, period, freq))
+
+
 @app.get("/api/quotes")
 def api_quotes():
     symbols = [s for s in (request.args.get("symbols") or "").split(",") if s][:30]
