@@ -66,8 +66,13 @@ def symbol_news(symbol: str, name: str | None = None, limit: int = 10) -> dict:
     q = NEWS_QUERY.get(symbol) or (name or symbol)
     url = "https://news.google.com/rss/search?" + urllib.parse.urlencode(
         {"q": f"{q} when:7d", "hl": "ja", "gl": "JP", "ceid": "JP:ja"})
+    try:
+        feed, provider, error = _fetch_rss(url), "Googleニュース", None
+    except Exception as e:
+        # クラウド環境で Google から拒否された場合は Yahoo のニュース検索に切り替える
+        feed, provider, error = _yahoo_news(symbol, name), "Yahoo Finance", f"Googleニュース取得失敗: {e}"
     out, seen = [], set()
-    for it in sorted(_fetch_rss(url), key=lambda x: x["published"], reverse=True):
+    for it in sorted(feed, key=lambda x: x["published"], reverse=True):
         title = it["title"]
         # Googleニュースのタイトル末尾「 - 媒体名」を分離
         if it["source"] and title.endswith(" - " + it["source"]):
@@ -81,7 +86,23 @@ def symbol_news(symbol: str, name: str | None = None, limit: int = 10) -> dict:
             break
         out.append({"title": title, "link": it["link"], "source": it["source"],
                     "published": it["published"].isoformat()})
-    return {"symbol": symbol, "query": q, "items": out}
+    return {"symbol": symbol, "query": q, "provider": provider, "error": error, "items": out}
+
+
+def _yahoo_news(symbol: str, name: str | None) -> list[dict]:
+    import yfinance as yf
+
+    def load():
+        try:
+            news = yf.Search(symbol, news_count=10, max_results=0).news or []
+            if not news and name:
+                news = yf.Search(name, news_count=10, max_results=0).news or []
+        except Exception:
+            return []
+        return [{"title": n.get("title", ""), "link": n.get("link", ""), "source": n.get("publisher"),
+                 "published": pd.Timestamp(n.get("providerPublishTime", 0), unit="s", tz="UTC")} for n in news]
+
+    return _cached(("ynews", symbol), load, _TTL)
 
 
 # ---------- 中央銀行・国際機関 ----------

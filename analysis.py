@@ -55,12 +55,100 @@ FUNDAMENTAL_KEYS = (
 )
 
 
+def _row(df: pd.DataFrame, name: str, n: int | None = None) -> list[float]:
+    """財務諸表の行を新しい順に返す（欠損は除外）"""
+    if df is None or df.empty or name not in df.index:
+        return []
+    s = df.loc[name, sorted(df.columns, reverse=True)].dropna()
+    return [float(v) for v in (s.iloc[:n] if n else s)]
+
+
+def _info_fallback(symbol: str) -> dict:
+    """
+    クラウド環境では Yahoo の企業情報API（Ticker.info）が空で返ることがあるため、
+    検索API・株価API・財務諸表から主要指標を計算して補う。
+    """
+    t = yf.Ticker(symbol)
+    out = {}
+    try:
+        q = (yf.Search(symbol, max_results=3, news_count=0).quotes or [])
+        hit = next((x for x in q if x.get("symbol", "").upper() == symbol.upper()), None)
+        if hit:
+            out.update(shortName=hit.get("shortname") or hit.get("longname"), quoteType=hit.get("quoteType"),
+                       sector=hit.get("sector"), industry=hit.get("industry"))
+    except Exception:
+        pass
+    try:
+        fi = t.fast_info
+        out.update(currency=fi.get("currency"), marketCap=fi.get("marketCap"),
+                   fiftyTwoWeekHigh=fi.get("yearHigh"), fiftyTwoWeekLow=fi.get("yearLow"))
+        price, shares = fi.get("lastPrice"), fi.get("shares")
+    except Exception:
+        price = shares = None
+    if out.get("quoteType") not in (None, "EQUITY"):
+        return out
+
+    try:
+        qi, qb, cf = t.quarterly_income_stmt, t.quarterly_balance_sheet, t.cashflow
+    except Exception:
+        return out
+    ni4, rev4, op4 = _row(qi, "Net Income", 4), _row(qi, "Total Revenue", 4), _row(qi, "Operating Income", 4)
+    equity, debt = _row(qb, "Stockholders Equity", 1), _row(qb, "Total Debt", 1)
+    ca, cl = _row(qb, "Current Assets", 1), _row(qb, "Current Liabilities", 1)
+    if len(ni4) == 4:
+        ni = sum(ni4)
+        if shares:
+            out["trailingEps"] = ni / shares
+            if price and ni > 0:
+                out["trailingPE"] = price * shares / ni
+        if equity and equity[0] > 0:
+            out["returnOnEquity"] = ni / equity[0]
+        if len(rev4) == 4 and sum(rev4):
+            out["profitMargins"] = ni / sum(rev4)
+            if len(op4) == 4:
+                out["operatingMargins"] = sum(op4) / sum(rev4)
+    # 金融業は預金等が負債に含まれ、負債比率・流動比率・FCFが意味を持たないので算出しない
+    financial = out.get("sector") == "Financial Services"
+    if equity and equity[0] > 0:
+        if out.get("marketCap"):
+            out["priceToBook"] = out["marketCap"] / equity[0]
+        if debt and not financial:
+            out["debtToEquity"] = debt[0] / equity[0] * 100
+    if ca and cl and cl[0] and not financial:
+        out["currentRatio"] = ca[0] / cl[0]
+    # 前年同期比（5四半期分あるとき）
+    rev5, ni5 = _row(qi, "Total Revenue", 5), _row(qi, "Net Income", 5)
+    if len(rev5) == 5 and rev5[4]:
+        out["revenueGrowth"] = rev5[0] / rev5[4] - 1
+    if len(ni5) == 5 and ni5[4] > 0:
+        out["earningsGrowth"] = ni5[0] / ni5[4] - 1
+    fcf = _row(cf, "Free Cash Flow", 1)
+    if fcf and not financial:
+        out["freeCashflow"] = fcf[0]
+    try:
+        div = t.dividends
+        if len(div) and price:
+            # 直近の配当日から約1年分（同じ回の前年分を含めないよう350日）
+            recent = div[div.index > div.index[-1] - pd.Timedelta(days=350)]
+            out["dividendYield"] = float(recent.sum()) / price * 100
+    except Exception:
+        pass
+    paid, ni_y = _row(cf, "Cash Dividends Paid", 1), _row(t.income_stmt, "Net Income", 1)
+    if paid and ni_y and ni_y[0] > 0:
+        out["payoutRatio"] = abs(paid[0]) / ni_y[0]
+    if "trailingEps" in out or "returnOnEquity" in out:
+        out.setdefault("quoteType", "EQUITY")
+    return out
+
+
 def fetch_info(symbol: str) -> dict:
     def load():
         try:
             info = yf.Ticker(symbol).info or {}
         except Exception:
             info = {}
+        if not (info.get("shortName") or info.get("longName")):
+            info = {**_info_fallback(symbol), **{k: v for k, v in info.items() if v is not None}}
         return {
             "name": info.get("shortName") or info.get("longName") or symbol,
             **{k: info.get(k) for k in FUNDAMENTAL_KEYS},

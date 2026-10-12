@@ -530,7 +530,7 @@ async function loadNews(symbol) {
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || "ニュースの取得に失敗しました");
     if (current?.symbol !== symbol) return;
-    $("news-q").textContent = d.query;
+    $("news-q").textContent = d.provider === "Googleニュース" ? d.query : d.provider;
     $("news").innerHTML = d.items.length
       ? d.items.map((n) => `<li><a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a>
           <span>${esc(n.source || "")}・${ago(n.published)}</span></li>`).join("")
