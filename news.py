@@ -14,6 +14,15 @@ UA = {"User-Agent": "Mozilla/5.0 (compatible; MarketLens/1.0)"}
 _TTL = 900  # 秒
 
 
+def _unwrap(link: str) -> str:
+    """Bing のクリック計測用URLから元記事のURLを取り出す"""
+    if "bing.com/news/apiclick" in link:
+        real = urllib.parse.parse_qs(urllib.parse.urlparse(link).query).get("url")
+        if real:
+            return real[0]
+    return link
+
+
 def _fetch_rss(url: str) -> list[dict]:
     def load():
         req = urllib.request.Request(url, headers=UA)
@@ -36,7 +45,8 @@ def _fetch_rss(url: str) -> list[dict]:
                 continue
             if pub.tzinfo is None:
                 pub = pub.replace(tzinfo=pd.Timestamp.now(tz="UTC").tzinfo)
-            out.append({"title": f.get("title", ""), "link": f.get("link", ""), "source": f.get("source"),
+            out.append({"title": f.get("title", ""), "link": _unwrap(f.get("link", "")),
+                        "source": f.get("source") or f.get("Source"),
                         "published": pd.Timestamp(pub).tz_convert("UTC")})
         return out
 
@@ -59,18 +69,34 @@ NEWS_QUERY = {
 }
 
 
+_BLOG_SOURCES = {"note", "Ameba", "アメーバブログ", "はてなブログ", "livedoor Blog"}
 _QUOTE_PAGE = re.compile(r"株価・株式情報|企業情報|レート・チャート|株価チャート|株主優待")
 
 
 def symbol_news(symbol: str, name: str | None = None, limit: int = 10) -> dict:
     q = NEWS_QUERY.get(symbol) or (name or symbol)
-    url = "https://news.google.com/rss/search?" + urllib.parse.urlencode(
-        {"q": f"{q} when:7d", "hl": "ja", "gl": "JP", "ceid": "JP:ja"})
-    try:
-        feed, provider, error = _fetch_rss(url), "Googleニュース", None
-    except Exception as e:
-        # クラウド環境で Google から拒否された場合は Yahoo のニュース検索に切り替える
-        feed, provider, error = _yahoo_news(symbol, name), "Yahoo Finance", f"Googleニュース取得失敗: {e}"
+    # クラウド環境では Google が拒否することがあるため、Bing → Yahoo Finance（英語）の順に切り替える
+    sources = [
+        ("Googleニュース", "https://news.google.com/rss/search?" + urllib.parse.urlencode(
+            {"q": f"{q} when:7d", "hl": "ja", "gl": "JP", "ceid": "JP:ja"})),
+        ("Bingニュース", "https://www.bing.com/news/search?" + urllib.parse.urlencode(
+            {"q": q, "format": "rss", "setlang": "ja", "cc": "JP", "mkt": "ja-JP"})),
+    ]
+    feed, provider, errors = [], None, []
+    for label, url in sources:
+        try:
+            feed = _fetch_rss(url)
+        except Exception as e:
+            errors.append(f"{label}: {e}")
+            continue
+        if feed:
+            provider = label
+            break
+    if not feed:
+        feed, provider = _yahoo_news(symbol, name), "Yahoo Finance"
+    error = " / ".join(errors) or None
+    week_ago = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
+    feed = [it for it in feed if it["published"] >= week_ago] or feed
     out, seen = [], set()
     for it in sorted(feed, key=lambda x: x["published"], reverse=True):
         title = it["title"]
@@ -79,7 +105,7 @@ def symbol_news(symbol: str, name: str | None = None, limit: int = 10) -> dict:
             title = title[: -len(it["source"]) - 3]
         # 同じ記事の転載と、株価・レートの情報ページは除外
         key = re.sub(r"\W", "", title)[:25]
-        if key in seen or _QUOTE_PAGE.search(title):
+        if key in seen or _QUOTE_PAGE.search(title) or (it["source"] or "") in _BLOG_SOURCES:
             continue
         seen.add(key)
         if len(out) >= limit:
