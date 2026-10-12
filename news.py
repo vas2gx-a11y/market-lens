@@ -25,16 +25,16 @@ def _unwrap(link: str) -> str:
     return link
 
 
-def _fetch_rss(url: str) -> list[dict]:
+def _fetch_rss(url: str, timeout: float = 15, attempts: int = 2) -> list[dict]:
     def load():
         req = urllib.request.Request(url, headers=UA)
-        for attempt in range(2):  # 一時的な失敗に備えて1回だけ再試行
+        for attempt in range(attempts):  # 既定では一時的な失敗に備えて1回だけ再試行
             try:
-                with urllib.request.urlopen(req, timeout=15) as r:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
                     root = ET.fromstring(r.read())
                 break
             except Exception:
-                if attempt:
+                if attempt == attempts - 1:
                     raise
         out = []
         for it in root.iter():
@@ -78,20 +78,21 @@ _QUOTE_PAGE = re.compile(r"株価・株式情報|企業情報|レート・チャ
 def symbol_news(symbol: str, name: str | None = None, limit: int = 10) -> dict:
     q = NEWS_QUERY.get(symbol) or (name or symbol)
     # クラウド環境では Google が拒否することがあるため、Bing → Yahoo Finance（英語）の順に切り替える
+    # 第1候補は待ち時間を短く・再試行なしにして、失敗時に早く次へ移る
     sources = [
         ("Googleニュース", "https://news.google.com/rss/search?" + urllib.parse.urlencode(
-            {"q": f"{q} when:7d", "hl": "ja", "gl": "JP", "ceid": "JP:ja"})),
+            {"q": f"{q} when:7d", "hl": "ja", "gl": "JP", "ceid": "JP:ja"}), 4, 1),
         ("Bingニュース", "https://www.bing.com/news/search?" + urllib.parse.urlencode(
-            {"q": q, "format": "rss", "setlang": "ja", "cc": "JP", "mkt": "ja-JP"})),
+            {"q": q, "format": "rss", "setlang": "ja", "cc": "JP", "mkt": "ja-JP"}), 15, 2),
     ]
     feed, provider, errors = [], None, []
     now = time.time()
-    for label, url in sources:
+    for label, url, timeout, attempts in sources:
         if _down_until.get(label, 0) > now:
             errors.append(f"{label}: 一時停止中（直近で取得失敗）")
             continue
         try:
-            feed = _fetch_rss(url)
+            feed = _fetch_rss(url, timeout, attempts)
         except Exception as e:
             # 失敗した取得元は30分間スキップして、毎回のタイムアウト待ちを避ける
             _down_until[label] = now + 1800
