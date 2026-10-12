@@ -1,5 +1,6 @@
 """ニュース取得：銘柄ニュース（Googleニュース）と中央銀行・IMF等の公式発表＋市場の反応"""
 import re
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -12,6 +13,7 @@ from analysis import _cached, fetch_history
 
 UA = {"User-Agent": "Mozilla/5.0 (compatible; MarketLens/1.0)"}
 _TTL = 900  # 秒
+_down_until: dict[str, float] = {}  # 取得元 → この時刻まではスキップ
 
 
 def _unwrap(link: str) -> str:
@@ -83,10 +85,16 @@ def symbol_news(symbol: str, name: str | None = None, limit: int = 10) -> dict:
             {"q": q, "format": "rss", "setlang": "ja", "cc": "JP", "mkt": "ja-JP"})),
     ]
     feed, provider, errors = [], None, []
+    now = time.time()
     for label, url in sources:
+        if _down_until.get(label, 0) > now:
+            errors.append(f"{label}: 一時停止中（直近で取得失敗）")
+            continue
         try:
             feed = _fetch_rss(url)
         except Exception as e:
+            # 失敗した取得元は30分間スキップして、毎回のタイムアウト待ちを避ける
+            _down_until[label] = now + 1800
             errors.append(f"{label}: {e}")
             continue
         if feed:
