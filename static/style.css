@@ -91,6 +91,7 @@ h2 small { color: var(--accent); margin-left: 6px; }
 .toggles i { width: 12px; height: 3px; background: var(--c); border-radius: 2px; }
 .toggles label:has(input:not(:checked)) { opacity: .35; }
 .chart { width: 100%; }
+#chart-note { color: var(--accent); margin-left: 6px; font-size: 11px; }
 .main-chart { height: 420px; }
 .sub-chart { height: 120px; }
 .sub-label { color: var(--muted); font-size: 11px; margin: 10px 0 2px; }
@@ -165,4 +166,28 @@ h2 small { color: var(--accent); margin-left: 6px; }
   .perf { grid-template-columns: repeat(2, 1fr); }
   .q-price { font-size: 22px; }
   .search select { flex: 1; }
+}
+
+/* backtest */
+.bt-ctrl { display: flex; gap: 6px; }
+.bt-ctrl select {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 8px; padding: 6px 8px; font: inherit; font-size: 12px;
+}
+.bt-ctrl .ghost { width: auto; padding: 6px 14px; font-size: 12px; }
+#bt-note { color: var(--muted); margin-left: 6px; font-size: 11px; }
+.bt-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.bt-table th { color: var(--muted); font-weight: 400; text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.bt-table td { text-align: right; padding: 7px 8px; white-space: nowrap; border-bottom: 1px solid var(--line); }
+.bt-table th:first-child, .bt-table td:first-child { text-align: left; }
+.bt-table i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.bt-table tr.best td:first-child::after { content: "最良"; color: #111; background: var(--accent); border-radius: 4px; font-size: 10px; padding: 1px 5px; margin-left: 6px; }
+.bt-chart { height: 220px; }
+.bt-fwd { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.bt-fwd > div { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.bt-fwd .k { color: var(--muted); font-size: 11px; }
+.bt-fwd .v { font-family: var(--mono); font-size: 15px; margin-top: 2px; }
+.bt-fwd small { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+@media (max-width: 520px) {
+  .bt-table th:nth-child(3), .bt-table td:nth-child(3), .bt-table th:nth-child(7), .bt-table td:nth-child(7) { display: none; }
 }

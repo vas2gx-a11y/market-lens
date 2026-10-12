@@ -98,6 +98,8 @@ function renderCharts(d) {
   const pf = { type: "price", precision, minMove: 1 / 10 ** precision };
   S.candle.applyOptions({ priceFormat: pf });
 
+  // 日足(日付)と分足(UNIX秒)で時刻の型が変わるため、先に全系列を空にする
+  Object.values(S).forEach((s) => s.setData([]));
   S.candle.setData(d.candles);
   const up = css("--up"), down = css("--down");
   S.volume.setData(d.volume.map((v, i) => ({
@@ -108,17 +110,20 @@ function renderCharts(d) {
   }
   S.MACD_HIST.setData(d.indicators.MACD_HIST.map((p) => ({ ...p, color: p.value >= 0 ? up + "99" : down + "99" })));
 
-  // 予測線は最終終値から接続
+  // 予測線は日足のみ。最終終値から接続
+  const fcKeys = { FC_MID: "mid", FC_U68: "upper68", FC_L68: "lower68", FC_U95: "upper95", FC_L95: "lower95" };
   const anchor = { time: d.candles.at(-1).time, value: d.last };
-  const fc = d.forecast;
   S.FC_MID.applyOptions({ priceFormat: pf });
-  S.FC_MID.setData([anchor, ...fc.mid]);
-  S.FC_U68.setData([anchor, ...fc.upper68]);
-  S.FC_L68.setData([anchor, ...fc.lower68]);
-  S.FC_U95.setData([anchor, ...fc.upper95]);
-  S.FC_L95.setData([anchor, ...fc.lower95]);
+  for (const [k, f] of Object.entries(fcKeys)) {
+    S[k].setData(d.interval === "1d" ? [anchor, ...d.forecast[f]] : []);
+  }
 
   applyToggles();
+  const intraday = d.interval !== "1d";
+  mainChart.applyOptions({ timeScale: { timeVisible: intraday, secondsVisible: false } });
+  $("chart-note").textContent = intraday
+    ? `${$("interval").selectedOptions[0].text}・最終 ${d.updated}（取引所の現地時刻）`
+    : "";
   charts.forEach((c) => c.timeScale().fitContent());
 }
 
@@ -185,13 +190,30 @@ function renderFundamentals(f) {
   $("fund").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
 }
 
+// ---------- interval / period ----------
+const PERIODS = {
+  daily: [["3mo", "3ヶ月"], ["6mo", "6ヶ月"], ["1y", "1年"], ["2y", "2年"], ["5y", "5年"]],
+  intraday: [["1d", "1日"], ["5d", "5日"], ["1mo", "1ヶ月"]],
+};
+function setPeriodOptions() {
+  const intraday = $("interval").value !== "1d";
+  const opts = PERIODS[intraday ? "intraday" : "daily"];
+  $("period").innerHTML = opts.map(([v, l]) => `<option value="${v}">${l}</option>`).join("");
+  $("period").value = intraday ? "5d" : "1y";
+  // 予測は日足チャートにのみ描画
+  const fc = document.querySelector('#toggles input[data-k="FC"]').closest("label");
+  fc.style.display = intraday ? "none" : "";
+}
+
 // ---------- load ----------
 async function load(symbol) {
   symbol = symbol.trim().toUpperCase();
   if (!symbol) return;
   $("symbol").value = symbol;
   document.body.classList.add("loading");
-  const params = new URLSearchParams({ symbol, period: $("period").value, horizon: $("horizon").value });
+  const params = new URLSearchParams({
+    symbol, period: $("period").value, horizon: $("horizon").value, interval: $("interval").value,
+  });
   try {
     const res = await fetch(`/api/analyze?${params}`);
     const d = await res.json();
@@ -200,6 +222,7 @@ async function load(symbol) {
     renderCharts(d);
     renderPanels(d);
     $("ai-out").innerHTML = "";
+    if (current.symbol !== $("bt-rows").dataset.s) resetBacktest();
     document.querySelectorAll("#presets button").forEach((b) => b.classList.toggle("active", b.dataset.s === symbol));
     history.replaceState(null, "", `?s=${encodeURIComponent(symbol)}`);
   } catch (e) {
@@ -212,9 +235,78 @@ async function load(symbol) {
 $("search").addEventListener("submit", (e) => { e.preventDefault(); load($("symbol").value); });
 $("period").addEventListener("change", () => current && load(current.symbol));
 $("horizon").addEventListener("change", () => current && load(current.symbol));
+$("interval").addEventListener("change", () => { setPeriodOptions(); current && load(current.symbol); });
 
 $("presets").innerHTML = PRESETS.map(([n, s]) => `<button data-s="${s}">${n}</button>`).join("");
 $("presets").addEventListener("click", (e) => { if (e.target.dataset.s) load(e.target.dataset.s); });
+
+// ---------- backtest ----------
+const BT_COLORS = { trend: "--sma20", reversion: "--sma200", buy_hold: "--muted" };
+const btChart = LC.createChart($("chart-bt"), {
+  ...baseOpts(),
+  rightPriceScale: { borderColor: css("--line"), mode: LC.PriceScaleMode.Logarithmic },
+  timeScale: { borderColor: css("--line"), minBarSpacing: 0.01 },  // 10年分を1画面に収める
+});
+const BT = Object.fromEntries(Object.entries(BT_COLORS).map(([k, c]) => [k, btChart.addLineSeries({
+  color: css(c), lineWidth: k === "buy_hold" ? 1 : 2, priceLineVisible: false,
+  lineStyle: k === "buy_hold" ? LC.LineStyle.Dashed : LC.LineStyle.Solid,
+})]));
+
+function resetBacktest() {
+  $("bt-body").hidden = true;
+  $("bt-note").textContent = "";
+}
+
+async function runBacktest() {
+  if (!current) return;
+  const btn = $("bt-btn");
+  btn.disabled = true;
+  btn.textContent = "検証中…";
+  const params = new URLSearchParams({ symbol: current.symbol, period: $("bt-period").value, threshold: $("bt-th").value });
+  try {
+    const res = await fetch(`/api/backtest?${params}`);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || "バックテストに失敗しました");
+    if (d.symbol !== current.symbol) return;
+    renderBacktest(d);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "検証する";
+  }
+}
+
+function renderBacktest(d) {
+  $("bt-rows").dataset.s = d.symbol;
+  $("bt-note").textContent = `${d.from} 〜 ${d.to}`;
+  const sign = (v) => (v > 0 ? "+" : "") + v;
+  $("bt-rows").innerHTML = Object.keys(BT_COLORS).map((k) => [k, d.strategies[k]]).map(([k, s]) => `
+    <tr class="${k === d.best ? "best" : ""}">
+      <td><i style="background:${css(BT_COLORS[k])}"></i>${s.name}</td>
+      <td class="${cls(s.cagr_pct)}">${sign(s.cagr_pct)}%</td>
+      <td class="${cls(s.total_pct)}">${sign(s.total_pct)}%</td>
+      <td>${s.sharpe ?? "—"}</td>
+      <td class="down">${s.max_dd_pct}%</td>
+      <td>${s.trades}回</td>
+      <td>${s.exposure_pct}%</td>
+    </tr>`).join("");
+  $("bt-body").hidden = false;
+  for (const [k, series] of Object.entries(BT)) series.setData(d.equity[k]);
+  // 非表示から表示に切り替えた直後はサイズ確定を待ってから全期間を表示
+  requestAnimationFrame(() => btChart.timeScale().fitContent());
+
+  $("bt-h").textContent = d.horizon;
+  $("bt-fwd").innerHTML = ["強気", "中立", "弱気"].map((lb) => {
+    const f = d.forward_by_label[lb];
+    if (!f) return `<div><div class="k">${lb}</div><div class="v">—</div></div>`;
+    return `<div><div class="k">${lb} <small>(${f.count}日)</small></div>
+      <div class="v ${cls(f.avg_pct)}">${pct(f.avg_pct)}</div><small>勝率 ${f.win_pct}%</small></div>`;
+  }).join("");
+}
+
+$("bt-btn").addEventListener("click", runBacktest);
+["bt-period", "bt-th"].forEach((id) => $(id).addEventListener("change", () => !$("bt-body").hidden && runBacktest()));
 
 // ---------- AI ----------
 const aiBtn = $("ai-btn");
@@ -294,5 +386,6 @@ $("watch").addEventListener("click", (e) => {
 });
 
 // ---------- init ----------
+setPeriodOptions();
 load(new URLSearchParams(location.search).get("s") || "7203.T");
 renderWatch();

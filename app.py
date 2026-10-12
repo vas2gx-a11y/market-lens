@@ -40,7 +40,20 @@ def api_analyze():
     symbol = _symbol(request.args.get("symbol"))
     period = request.args.get("period", "1y")
     horizon = max(5, min(int(request.args.get("horizon", 20)), 60))
-    return jsonify(analysis.analyze(symbol, period, horizon))
+    interval = request.args.get("interval", "1d")
+    if interval != "1d" and interval not in analysis.INTRADAY:
+        raise ValueError("足種が不正です")
+    return jsonify(analysis.analyze(symbol, period, horizon, interval))
+
+
+@app.get("/api/backtest")
+def api_backtest():
+    symbol = _symbol(request.args.get("symbol"))
+    period = request.args.get("period", "10y")
+    if period not in ("2y", "5y", "10y", "max"):
+        raise ValueError("期間が不正です")
+    threshold = max(10, min(int(request.args.get("threshold", 30)), 90))
+    return jsonify(analysis.backtest(symbol, period, threshold))
 
 
 @app.get("/api/quotes")

@@ -9,10 +9,13 @@ _CACHE: dict = {}
 _CACHE_TTL = 300  # 秒
 
 
-def _cached(key, fn):
+INTRADAY = {"5m": "5分足", "15m": "15分足", "60m": "1時間足"}
+
+
+def _cached(key, fn, ttl=_CACHE_TTL):
     now = time.time()
     hit = _CACHE.get(key)
-    if hit and now - hit[0] < _CACHE_TTL:
+    if hit and now - hit[0] < ttl:
         return hit[1]
     value = fn()
     _CACHE[key] = (now, value)
@@ -24,16 +27,21 @@ def is_24x7(symbol: str) -> bool:
     return symbol.upper().endswith(("-USD", "-JPY", "-USDT"))
 
 
-def fetch_history(symbol: str, period: str = "1y") -> pd.DataFrame:
+def fetch_history(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
     def load():
-        df = yf.Ticker(symbol).history(period=period, interval="1d", auto_adjust=True)
+        df = yf.Ticker(symbol).history(period=period, interval=interval, auto_adjust=True)
         if df.empty:
             raise ValueError(f"データが取得できませんでした: {symbol}")
         df = df[["Open", "High", "Low", "Close", "Volume"]].dropna(subset=["Close"])
-        df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+        # 取引所の現地時刻のまま扱う（チャートにはそのまま表示される）
+        df.index = pd.to_datetime(df.index).tz_localize(None)
+        if interval == "1d":
+            df.index = df.index.normalize()
         return df
 
-    return _cached(("hist", symbol, period), load)
+    # 分足は更新頻度が高いのでキャッシュを短くする
+    ttl = 60 if interval in INTRADAY else _CACHE_TTL
+    return _cached(("hist", symbol, period, interval), load, ttl)
 
 
 FUNDAMENTAL_KEYS = (
@@ -199,35 +207,148 @@ def forecast(df: pd.DataFrame, symbol: str, horizon: int = 20, lookback: int = 1
     }
 
 
+# ---------- バックテスト ----------
+
+def _metrics(ret: pd.Series, ann: int) -> dict:
+    equity = (1 + ret).cumprod()
+    years = len(ret) / ann
+    cagr = equity.iloc[-1] ** (1 / years) - 1 if years > 0 else 0
+    sd = ret.std(ddof=1)
+    return {
+        "total_pct": round(float((equity.iloc[-1] - 1) * 100), 1),
+        "cagr_pct": round(float(cagr * 100), 1),
+        "sharpe": round(float(ret.mean() / sd * np.sqrt(ann)), 2) if sd > 0 else None,
+        "max_dd_pct": round(float((equity / equity.cummax() - 1).min() * 100), 1),
+    }
+
+
+def _positions(scores: pd.Series, threshold: int, mode: str) -> pd.Series:
+    """当日のスコアで決めた保有フラグ（実際の保有は翌日から）"""
+    if mode == "trend":
+        return (scores >= threshold).astype(float)
+    # 逆張り: スコア <= -threshold で買い、>= threshold で手仕舞い
+    pos, held = [], 0.0
+    for v in scores:
+        if v <= -threshold:
+            held = 1.0
+        elif v >= threshold:
+            held = 0.0
+        pos.append(held)
+    return pd.Series(pos, index=scores.index)
+
+
+def backtest(symbol: str, period: str = "10y", threshold: int = 30, cost: float = 0.001,
+             horizon: int = 20) -> dict:
+    """
+    シグナル総合スコアの検証。翌日から売買（先読みなし）、売買ごとに片道 cost を控除。
+    - 順張り: スコア >= threshold で保有、未満で手仕舞い
+    - 逆張り: スコア <= -threshold で買い、>= threshold で手仕舞い
+    - Buy&Hold: 常に保有
+    あわせて判定ラベル別に、その後 horizon 日リターンの平均と勝率を集計する。
+    """
+    df = add_indicators(fetch_history(symbol, period))
+    start = 200  # SMA200 が揃うまでは除外
+    if len(df) <= start + horizon:
+        raise ValueError("バックテストに十分なデータがありません")
+
+    def run():
+        return pd.Series([signals(df.iloc[: i + 1])["score"] for i in range(start, len(df))],
+                         index=df.index[start:])
+
+    scores = _cached(("scores", symbol, period, df.index[-1]), run, 3600)
+    ret = df["Close"].pct_change().loc[scores.index].fillna(0)
+    ann = 365 if is_24x7(symbol) else 252
+
+    strategies, curves = {}, {}
+    for key, name in (("trend", "順張り"), ("reversion", "逆張り"), ("buy_hold", "Buy&Hold")):
+        if key == "buy_hold":
+            pos = pd.Series(1.0, index=scores.index)
+        else:
+            pos = _positions(scores, threshold, key).shift(1).fillna(0)
+        trades = pos.diff().abs().fillna(pos.iloc[0])
+        r = pos * ret - trades * cost
+        strategies[key] = {"name": name, **_metrics(r, ann), "trades": int(trades.sum()),
+                           "exposure_pct": round(float(pos.mean() * 100), 1)}
+        curves[key] = [{"time": d.strftime("%Y-%m-%d"), "value": round(float(v), 4)}
+                       for d, v in (1 + r).cumprod().items()]
+
+    fwd = (df["Close"].shift(-horizon) / df["Close"] - 1).loc[scores.index].dropna()
+    labels = np.where(scores >= 30, "強気", np.where(scores <= -30, "弱気", "中立"))
+    by_label = {}
+    for lb in ("強気", "中立", "弱気"):
+        r = fwd[labels[: len(fwd)] == lb]
+        if len(r):
+            by_label[lb] = {"count": int(len(r)), "avg_pct": round(float(r.mean() * 100), 2),
+                            "win_pct": round(float((r > 0).mean() * 100), 1)}
+
+    return {
+        "symbol": symbol,
+        "from": scores.index[0].strftime("%Y-%m-%d"),
+        "to": scores.index[-1].strftime("%Y-%m-%d"),
+        "threshold": threshold,
+        "cost_pct": cost * 100,
+        "strategies": strategies,
+        "best": max(strategies, key=lambda k: strategies[k]["sharpe"] or -99),
+        "horizon": horizon,
+        "forward_by_label": by_label,
+        "equity": curves,
+    }
+
+
 # ---------- まとめ ----------
 
-def _series(df, col):
+def _t(d, intraday):
+    # 分足はUNIX秒（現地時刻をUTCとみなす）、日足は日付文字列
+    return int(pd.Timestamp(d).timestamp()) if intraday else d.strftime("%Y-%m-%d")
+
+
+def _series(df, col, intraday=False):
     s = df[col].dropna()
-    return [{"time": d.strftime("%Y-%m-%d"), "value": round(float(v), 6)} for d, v in s.items()]
+    return [{"time": _t(d, intraday), "value": round(float(v), 6)} for d, v in s.items()]
 
 
-def analyze(symbol: str, period: str = "1y", horizon: int = 20) -> dict:
-    # 指標計算（SMA200）のために表示期間より長めに取得
+def _chart_frame(symbol, period, interval):
+    if interval in INTRADAY:
+        # 5分足は最大60日分まで取得可能。指標計算用に表示期間より長めに取得
+        fetch_period = {"1d": "5d", "5d": "1mo", "1mo": "60d"}.get(period, "1mo")
+        if interval == "60m":
+            fetch_period = {"1d": "1mo", "5d": "3mo", "1mo": "6mo"}.get(period, "3mo")
+        df = add_indicators(fetch_history(symbol, fetch_period, interval))
+        days = {"1d": 1, "5d": 5, "1mo": 21}.get(period, 5)
+        if is_24x7(symbol):
+            days = int(days * 7 / 5) if days > 1 else 1
+        sessions = pd.Index(df.index.normalize().unique())
+        return df[df.index.normalize() >= sessions[-min(days, len(sessions))]]
+
     fetch_period = {"3mo": "1y", "6mo": "2y", "1y": "2y", "2y": "5y", "5y": "10y"}.get(period, "2y")
-    full = add_indicators(fetch_history(symbol, fetch_period))
+    df = add_indicators(fetch_history(symbol, fetch_period))
     days = {"3mo": 63, "6mo": 126, "1y": 252, "2y": 504, "5y": 1260}.get(period, 252)
     if is_24x7(symbol):
         days = int(days * 365 / 252)
-    df = full.iloc[-days:]
+    return df.iloc[-days:]
+
+
+def analyze(symbol: str, period: str = "1y", horizon: int = 20, interval: str = "1d") -> dict:
+    intraday = interval in INTRADAY
+    # シグナル・予測・騰落率は常に日足ベース
+    full = add_indicators(fetch_history(symbol, "2y"))
+    df = _chart_frame(symbol, period, interval)
 
     last, prev = full.iloc[-1], full.iloc[-2]
     candles = [
-        {"time": d.strftime("%Y-%m-%d"), "open": round(float(r.Open), 6), "high": round(float(r.High), 6),
+        {"time": _t(d, intraday), "open": round(float(r.Open), 6), "high": round(float(r.High), 6),
          "low": round(float(r.Low), 6), "close": round(float(r.Close), 6)}
         for d, r in df.iterrows()
     ]
-    volume = [{"time": d.strftime("%Y-%m-%d"), "value": float(v)} for d, v in df["Volume"].items()]
+    volume = [{"time": _t(d, intraday), "value": float(v)} for d, v in df["Volume"].items()]
 
     info = fetch_info(symbol)
     has_volume = bool(full["Volume"].iloc[-60:].sum() > 0)
     vol_ma = last["VOL_MA20"]
     return {
         "symbol": symbol,
+        "interval": interval,
+        "updated": df.index[-1].strftime("%Y-%m-%d %H:%M") if intraday else None,
         "name": info["name"],
         "fundamentals": {k: v for k, v in info.items() if k != "name" and v is not None},
         "volume_stats": {
@@ -240,7 +361,7 @@ def analyze(symbol: str, period: str = "1y", horizon: int = 20) -> dict:
         "date": full.index[-1].strftime("%Y-%m-%d"),
         "candles": candles,
         "volume": volume,
-        "indicators": {c: _series(df, c) for c in
+        "indicators": {c: _series(df, c, intraday) for c in
                        ("SMA20", "SMA50", "SMA200", "BB_UP", "BB_LO", "RSI", "MACD", "MACD_SIG", "MACD_HIST",
                         "VOL_MA20", "OBV")},
         "latest": {c: (None if pd.isna(last[c]) else round(float(last[c]), 4)) for c in

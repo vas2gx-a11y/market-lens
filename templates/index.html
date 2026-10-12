@@ -13,6 +13,12 @@
   <div class="brand">Market<span>Lens</span></div>
   <form id="search" class="search" autocomplete="off">
     <input id="symbol" placeholder="銘柄コード（例: 7203.T / AAPL / BTC-USD）" value="7203.T">
+    <select id="interval" title="足種">
+      <option value="1d" selected>日足</option>
+      <option value="60m">1時間足</option>
+      <option value="15m">15分足</option>
+      <option value="5m">5分足</option>
+    </select>
     <select id="period">
       <option value="3mo">3ヶ月</option>
       <option value="6mo">6ヶ月</option>
@@ -48,7 +54,7 @@
 
     <div class="card chart-card">
       <div class="chart-head">
-        <span>価格チャート</span>
+        <span>価格チャート <small id="chart-note" class="mono"></small></span>
         <div class="toggles" id="toggles">
           <label><input type="checkbox" data-k="SMA20" checked><i style="--c:var(--sma20)"></i>SMA20</label>
           <label><input type="checkbox" data-k="SMA50" checked><i style="--c:var(--sma50)"></i>SMA50</label>
@@ -64,6 +70,36 @@
       <div id="chart-rsi" class="chart sub-chart"></div>
       <div class="sub-label">MACD (12, 26, 9)</div>
       <div id="chart-macd" class="chart sub-chart"></div>
+    </div>
+
+    <div class="card bt-card">
+      <div class="chart-head">
+        <span>バックテスト（シグナル総合スコアの検証） <small id="bt-note" class="mono"></small></span>
+        <div class="bt-ctrl">
+          <select id="bt-period" title="検証期間">
+            <option value="5y">5年</option>
+            <option value="10y" selected>10年</option>
+            <option value="max">全期間</option>
+          </select>
+          <select id="bt-th" title="判定しきい値">
+            <option value="20">±20</option>
+            <option value="30" selected>±30</option>
+            <option value="50">±50</option>
+          </select>
+          <button id="bt-btn" class="ghost">検証する</button>
+        </div>
+      </div>
+      <div id="bt-body" hidden>
+        <table class="bt-table mono">
+          <thead><tr><th>戦略</th><th>年率</th><th>累積</th><th>Sharpe</th><th>最大DD</th><th>売買</th><th>保有率</th></tr></thead>
+          <tbody id="bt-rows"></tbody>
+        </table>
+        <div class="sub-label">資産推移（初期値 = 1）</div>
+        <div id="chart-bt" class="chart bt-chart"></div>
+        <div class="sub-label">判定後 <span id="bt-h"></span> 日間のリターン</div>
+        <div class="bt-fwd" id="bt-fwd"></div>
+      </div>
+      <p class="note">順張り：スコア ≥ +しきい値 で保有。逆張り：スコア ≤ −しきい値 で買い、≥ +しきい値 で手仕舞い。いずれも判定の翌日に売買、片道0.1%のコスト控除。過去の成績は将来を保証しません。</p>
     </div>
   </section>
 
